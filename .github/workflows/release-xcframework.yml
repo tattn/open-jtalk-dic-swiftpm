@@ -1,0 +1,149 @@
+name: Release XCFramework
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g., 1.11.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build XCFramework and Resource Bundle
+        run: |
+          chmod +x ./scripts/create_openjtalk_xcframework.sh
+          ./scripts/create_openjtalk_xcframework.sh
+
+      - name: Create XCFramework archive and calculate checksums
+        run: |
+          cd build
+          
+          # Create XCFramework archive
+          zip -r OpenJTalkDictionary.xcframework.zip OpenJTalkDictionary.xcframework
+          echo "XCFRAMEWORK_PATH=$(pwd)/OpenJTalkDictionary.xcframework.zip" >> $GITHUB_ENV
+          echo "XCFramework archive created at: $(pwd)/OpenJTalkDictionary.xcframework.zip"
+          ls -lh OpenJTalkDictionary.xcframework.zip
+          
+          # Calculate checksum for XCFramework
+          XCFRAMEWORK_CHECKSUM=$(shasum -a 256 OpenJTalkDictionary.xcframework.zip | cut -d ' ' -f 1)
+          echo "XCFRAMEWORK_CHECKSUM=${XCFRAMEWORK_CHECKSUM}" >> $GITHUB_ENV
+          echo "XCFramework SHA256 Checksum: ${XCFRAMEWORK_CHECKSUM}"
+          
+          # Bundle archive is already created by the script
+          echo "BUNDLE_PATH=$(pwd)/OpenJTalkDictionary.bundle.zip" >> $GITHUB_ENV
+          echo "Resource Bundle archive at: $(pwd)/OpenJTalkDictionary.bundle.zip"
+          ls -lh OpenJTalkDictionary.bundle.zip
+          
+          # Calculate checksum for Resource Bundle
+          BUNDLE_CHECKSUM=$(shasum -a 256 OpenJTalkDictionary.bundle.zip | cut -d ' ' -f 1)
+          echo "BUNDLE_CHECKSUM=${BUNDLE_CHECKSUM}" >> $GITHUB_ENV
+          echo "Resource Bundle SHA256 Checksum: ${BUNDLE_CHECKSUM}"
+
+      - name: Update Package.swift with new checksum
+        run: |
+          # Update the URL and checksum in Package.swift
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.version }}/OpenJTalkDictionary.xcframework.zip"
+          
+          # Update URL
+          sed -i '' "s|url: \"[^\"]*\"|url: \"${RELEASE_URL}\"|g" Package.swift
+          
+          # Update checksum
+          sed -i '' "s|checksum: \"[^\"]*\"|checksum: \"${{ env.XCFRAMEWORK_CHECKSUM }}\"|g" Package.swift
+          
+          echo "Updated Package.swift with:"
+          echo "URL: ${RELEASE_URL}"
+          echo "Checksum: ${{ env.XCFRAMEWORK_CHECKSUM }}"
+          
+          # Show the changes
+          cat Package.swift
+
+      - name: Commit and push Package.swift changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          git add Package.swift
+          git commit -m "Update Package.swift for v${{ github.event.inputs.version }} release"
+          git push
+
+      - name: Create and push tag
+        run: |
+          git tag -a "v${{ github.event.inputs.version }}" -m "Release v${{ github.event.inputs.version }}"
+          git push origin "v${{ github.event.inputs.version }}"
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.event.inputs.version }}
+          name: OpenJTalk Dictionary v${{ github.event.inputs.version }}
+          body: |
+            ## OpenJTalk Dictionary v${{ github.event.inputs.version }}
+
+            This release contains the OpenJTalk dictionary as both an XCFramework and a standalone Resource Bundle for iOS and macOS.
+
+            ### Supported Platforms
+            - iOS 16.0+ (arm64)
+            - iOS Simulator 16.0+ (arm64)
+            - macOS 13.0+ (arm64, x86_64)
+
+            ### Installation Options
+
+            #### Option 1: XCFramework (Recommended)
+            
+            The XCFramework includes dictionary resources embedded directly in the framework.
+
+            **Swift Package Manager:**
+            ```swift
+            .binaryTarget(
+                name: "OpenJTalkDictionary",
+                url: "https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.version }}/OpenJTalkDictionary.xcframework.zip",
+                checksum: "${{ env.XCFRAMEWORK_CHECKSUM }}"
+            )
+            ```
+
+            #### Option 2: Resource Bundle Only
+            
+            For projects that need just the dictionary resources without the framework wrapper.
+
+            **Manual Integration:**
+            1. Download `OpenJTalkDictionary.bundle.zip`
+            2. Extract and add the bundle to your project
+            3. Include it in your app's resources
+
+            ### Assets
+
+            | Asset | Description | SHA256 Checksum |
+            |-------|-------------|-----------------|
+            | `OpenJTalkDictionary.xcframework.zip` | Complete XCFramework with embedded resources | `${{ env.XCFRAMEWORK_CHECKSUM }}` |
+            | `OpenJTalkDictionary.bundle.zip` | Standalone resource bundle | `${{ env.BUNDLE_CHECKSUM }}` |
+
+            ### Dictionary Version
+            OpenJTalk Dictionary UTF-8 1.11
+
+            ### What's Changed
+            - Dictionary resources are now embedded directly in the XCFramework
+            - Added standalone resource bundle as a separate download option
+            - Improved build scripts and workflow automation
+
+          files: |
+            ${{ env.XCFRAMEWORK_PATH }}
+            ${{ env.BUNDLE_PATH }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
